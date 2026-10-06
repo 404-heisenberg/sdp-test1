@@ -141,3 +141,45 @@ export async function createFixtureRepo(
   }
   return { bySubject, mergeHash: bySubject.get('m1 merge feature')! };
 }
+
+/**
+ * A second scripted fixture for T4 author merging: a committed .mailmap folds
+ * the dana@example.org alias into Carol Dev <carol@example.com>, alongside an
+ * unrelated author eve. History (dates fixed):
+ *   f1 carol 2024-02-01: .mailmap +1, src/main.ts +6      (λ=7)
+ *   f2 dana  2024-02-02: src/main.ts +2/−2 (M5,M6 → N1,N2) (λ=4, mailmaps to carol)
+ *   f3 dana  2024-02-03: docs/notes.md +3                 (λ=3, mailmaps to carol)
+ *   f4 eve   2024-02-04: src/main.ts +4                   (λ=4)
+ * With the mailmap applied: carol λ=14 (n=3, "Carol Dev"), eve λ=4 (n=1),
+ * total churn 18, and dana@example.org appears nowhere.
+ */
+export async function createMailmapFixtureRepo(dir: string): Promise<void> {
+  const carol = { name: 'Carol Dev', email: 'carol@example.com' };
+  const dana = { name: 'Dana Doe', email: 'dana@example.org' };
+  const eve = { name: 'Eve', email: 'eve@example.com' };
+
+  await fs.mkdir(dir, { recursive: true });
+  await runGit(dir, ['init', '-b', 'main']);
+
+  // f1 — carol: commit the .mailmap first so it is present at HEAD for both
+  // ingestion paths (work tree for zip, mailmap.blob=HEAD:.mailmap for clone).
+  await write(dir, '.mailmap', `Carol Dev <${carol.email}> <${dana.email}>\n`);
+  await write(dir, 'src/main.ts', lines(seq('M', 6)));
+  await runGit(dir, ['add', '-A']);
+  await commit(dir, { message: 'f1 main with mailmap', author: carol, date: '2024-02-01T10:00:00Z' });
+
+  // f2 — dana (alias of carol): main.ts +2/−1 (M5,M6 → N1,N2).
+  await write(dir, 'src/main.ts', lines([...seq('M', 4), 'N1', 'N2']));
+  await runGit(dir, ['add', '-A']);
+  await commit(dir, { message: 'f2 aliased edit', author: dana, date: '2024-02-02T10:00:00Z' });
+
+  // f3 — dana: docs.
+  await write(dir, 'docs/notes.md', lines(seq('D', 3)));
+  await runGit(dir, ['add', '-A']);
+  await commit(dir, { message: 'f3 aliased docs', author: dana, date: '2024-02-03T10:00:00Z' });
+
+  // f4 — eve: main.ts +4 (P1..P4).
+  await write(dir, 'src/main.ts', lines([...seq('M', 4), 'N1', 'N2', ...seq('P', 4)]));
+  await runGit(dir, ['add', '-A']);
+  await commit(dir, { message: 'f4 eve adds', author: eve, date: '2024-02-04T10:00:00Z' });
+}

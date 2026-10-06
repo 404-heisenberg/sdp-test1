@@ -19,6 +19,11 @@ export interface AuthorMetrics {
   ownership: number;
 }
 
+export interface AuthorMerge {
+  canonicalEmail: string;
+  aliases: string[];
+}
+
 export interface RepoSummary {
   id: string;
   name: string;
@@ -109,6 +114,22 @@ export const api = {
     const qs = new URLSearchParams(params).toString();
     return request<AuthorMetrics[]>(`/api/repos/${encodeURIComponent(id)}/authors${qs ? `?${qs}` : ''}`);
   },
+
+  listMerges: (id: string) =>
+    request<{ merges: AuthorMerge[] }>(`/api/repos/${encodeURIComponent(id)}/authors/merges`),
+
+  mergeAuthors: (id: string, canonicalEmail: string, aliasEmails: string[]) =>
+    request<{ merges: AuthorMerge[] }>(`/api/repos/${encodeURIComponent(id)}/authors/merges`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ canonicalEmail, aliasEmails }),
+    }),
+
+  unmergeAuthors: (id: string, canonicalEmail: string) =>
+    request<{ merges: AuthorMerge[] }>(
+      `/api/repos/${encodeURIComponent(id)}/authors/merges/${encodeURIComponent(canonicalEmail)}`,
+      { method: 'DELETE' },
+    ),
 
   fileHistory: (id: string, params: Record<string, string> = {}) => {
     const qs = new URLSearchParams(params).toString();

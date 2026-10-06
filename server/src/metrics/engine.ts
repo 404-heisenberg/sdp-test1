@@ -36,6 +36,24 @@ export interface AuthorMetrics {
   ownership: number; // ω = λ_a/λ (0 when λ = 0)
 }
 
+/** A manual author merge: aliases fold into the canonical identity. */
+export interface AuthorMerge {
+  /** The surviving identity key (post-mailmap email) that keeps the merged metrics. */
+  canonicalEmail: string;
+  /** Identity keys folded into the canonical. */
+  aliases: string[];
+}
+
+/** Map every known identity to its canonical key; unmentioned identities map to themselves. */
+export function authorCanonicalMap(merges: AuthorMerge[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const m of merges) {
+    map.set(m.canonicalEmail, m.canonicalEmail);
+    for (const alias of m.aliases) map.set(alias, m.canonicalEmail);
+  }
+  return map;
+}
+
 function selectCommits(log: Log, sel: CommitSetSelection, author?: string): Commit[] {
   let selected: Commit[];
   if (sel.kind === 'all') {
@@ -240,10 +258,21 @@ export function fileHistory(log: Log, query: MetricsQuery = {}): FileHistoryEntr
   return history;
 }
 
-export function authorMetrics(log: Log, query: MetricsQuery = {}): AuthorMetrics[] {
+/**
+ * Author metrics keyed by canonical identity: aliases (mailmap is already baked
+ * into the stored rows) fold into their canonical email, so churn is summed,
+ * modifications unioned, and ownership renormalised — all from the stored rows,
+ * never re-running git.
+ */
+export function authorMetrics(
+  log: Log,
+  query: MetricsQuery = {},
+  merges: AuthorMerge[] = [],
+): AuthorMetrics[] {
   const commits = selectCommits(log, query.commitSet ?? { kind: 'all' }, query.author);
   const inSet = new Set(commits.map((c) => c.hash));
   const commitByHash = new Map(log.commits.map((c) => [c.hash, c]));
+  const canonicalOf = authorCanonicalMap(merges);
   const scope = normalizePath(query.path);
 
   let totalChurn = 0;
@@ -256,14 +285,19 @@ export function authorMetrics(log: Log, query: MetricsQuery = {}): AuthorMetrics
     if (!underPath(row.path, scope)) continue;
     const commit = commitByHash.get(row.hash);
     if (!commit) continue;
+    const email = canonicalOf.get(commit.authorEmail) ?? commit.authorEmail;
     const churn = row.added + row.removed;
     totalChurn += churn;
-    let agg = perAuthor.get(commit.authorEmail);
+    let agg = perAuthor.get(email);
     if (!agg) {
-      agg = { name: commit.authorName, nameDate: commit.date, churn: 0, mods: new Set<string>() };
-      perAuthor.set(commit.authorEmail, agg);
+      agg = { name: commit.authorName, nameDate: '', churn: 0, mods: new Set<string>() };
+      perAuthor.set(email, agg);
     }
-    if (commit.date > agg.nameDate) {
+    // The canonical identity keeps its own display name: only commits made with
+    // the canonical email itself update it (latest one wins). Aliases folded in
+    // by a manual merge lend their name only when the canonical has no in-scope
+    // commits, so the merged row still names the author the analyst picked.
+    if (commit.authorEmail === email && (agg.nameDate === '' || commit.date > agg.nameDate)) {
       agg.name = commit.authorName;
       agg.nameDate = commit.date;
     }

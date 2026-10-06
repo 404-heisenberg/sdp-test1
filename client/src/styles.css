@@ -450,3 +450,42 @@ th button.sort .arrow {
   color: var(--muted);
   white-space: nowrap;
 }
+
+.merge-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.merge-controls select {
+  max-width: 280px;
+}
+
+.merge-arrow {
+  color: var(--muted);
+}
+
+.merge-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.merge-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.merge-list li:last-child {
+  border-bottom: none;
+}

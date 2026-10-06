@@ -9,14 +9,22 @@ const execFileAsync = promisify(execFile);
 // 50% similarity threshold, mailmap applied to author identity, committer date in
 // strict ISO, numstat rows for line counts. This is the correctness core — every
 // metric is derived from what this single command reports.
+//
+// Mailmap: %aN/%aE resolve to the mailmapped author identity (plain %an/%ae stay
+// raw on git < 2.47 even with --use-mailmap). mailmap.blob=HEAD:.mailmap applies a
+// COMMITTED .mailmap on the --no-checkout clone path, which has no working tree;
+// on the zip path the extracted work-tree .mailmap applies as usual. A repo without
+// .mailmap treats the missing blob as empty, so the config is always safe.
 const LOG_ARGS = [
+  '-c',
+  'mailmap.blob=HEAD:.mailmap',
   'log',
   'HEAD',
   '--no-merges',
   '-M50%',
   '--use-mailmap',
   '--numstat',
-  '--format=%H%x1f%an%x1f%ae%x1f%cI%x1f%s',
+  '--format=%H%x1f%aN%x1f%aE%x1f%cI%x1f%s',
 ];
 
 export class GitError extends Error {}

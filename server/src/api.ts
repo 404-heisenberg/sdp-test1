@@ -12,6 +12,7 @@ import {
   loadLog,
 } from './registry.js';
 import { getDataDir } from './paths.js';
+import { loadMerges, saveMerge, deleteMerge, MergeError } from './merges.js';
 import {
   pathMetrics,
   fileMetrics,
@@ -179,10 +180,42 @@ export function createApiRouter(): express.Router {
     }
   });
 
+  // Author metrics with manual merges applied (recomputed from stored rows).
   router.get('/repos/:id/authors', async (req, res, next) => {
     try {
       const { log } = await loadLog(req.params.id);
-      res.json(authorMetrics(log, parseMetricsQuery(req)));
+      const merges = await loadMerges(req.params.id);
+      res.json(authorMetrics(log, parseMetricsQuery(req), merges));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Manual author merges: list, create (canonical + aliases), undo.
+  router.get('/repos/:id/authors/merges', async (req, res, next) => {
+    try {
+      res.json({ merges: await loadMerges(req.params.id) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/repos/:id/authors/merges', express.json(), async (req, res, next) => {
+    try {
+      const canonicalEmail = typeof req.body?.canonicalEmail === 'string' ? req.body.canonicalEmail : '';
+      const aliasEmails = Array.isArray(req.body?.aliasEmails) ? req.body.aliasEmails : [];
+      if (canonicalEmail === '' || aliasEmails.length === 0) {
+        throw new HttpError(400, 'Body must include "canonicalEmail" (string) and "aliasEmails" (string[]).');
+      }
+      res.status(201).json({ merges: await saveMerge(req.params.id, canonicalEmail, aliasEmails) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.delete('/repos/:id/authors/merges/:canonicalEmail', async (req, res, next) => {
+    try {
+      res.json({ merges: await deleteMerge(req.params.id, req.params.canonicalEmail) });
     } catch (err) {
       next(err);
     }
@@ -210,6 +243,10 @@ export function apiErrorHandler(err: unknown, _req: Request, res: Response, _nex
     return;
   }
   if (err instanceof IngestError) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+  if (err instanceof MergeError) {
     res.status(400).json({ error: err.message });
     return;
   }

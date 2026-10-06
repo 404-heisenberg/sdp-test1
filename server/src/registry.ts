@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getReposDir } from './paths.js';
+import { loadMerges } from './merges.js';
 import type { Log } from './git/parseGitLog.js';
 import type { PathMetrics } from './metrics/engine.js';
 import { pathMetrics, fileMetrics, authorMetrics } from './metrics/engine.js';
@@ -92,11 +93,12 @@ export async function repoView(
   topFiles = 25,
 ): Promise<RepoView> {
   const { meta, log } = await loadLog(id);
+  const merges = await loadMerges(id);
   return {
     meta,
     repository: pathMetrics(log, query),
     files: fileMetrics(log, query).slice(0, topFiles),
-    authors: authorMetrics(log, query),
+    authors: authorMetrics(log, query, merges),
   };
 }
 

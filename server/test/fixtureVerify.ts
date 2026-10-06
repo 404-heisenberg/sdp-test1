@@ -2,9 +2,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
-import { createFixtureRepo, AUTHORS } from './fixtureRepo.js';
+import { createFixtureRepo, createMailmapFixtureRepo, AUTHORS } from './fixtureRepo.js';
 import { ingestUrl, ingestZip, IngestError } from '../src/ingest.js';
 import { loadLog } from '../src/registry.js';
+import { loadMerges, saveMerge, deleteMerge } from '../src/merges.js';
 import { pathMetrics, fileMetrics, authorMetrics } from '../src/metrics/engine.js';
 import type { Log, PathMetricsLike } from './fixtureTypes.js';
 
@@ -259,6 +260,76 @@ export async function runFixtureChecks(): Promise<Check[]> {
         problems.push(`bob: churn ${bob.churn}, mods ${bob.modifications}, own ${bob.ownership}`);
       }
       return problems.length ? problems.join('; ') : undefined;
+    });
+
+    // ── T4 author merging: mailmap + manual merges ──
+    const mmDir = path.join(tmp, 'mailmap-repo-src');
+    await createMailmapFixtureRepo(mmDir);
+    const mmClone = await ingestUrl(`file://${mmDir}`);
+    const mmZip = new AdmZip();
+    mmZip.addLocalFolder(mmDir, 'mailmap-repo');
+    const mmZipPath = path.join(tmp, 'mailmap.zip');
+    mmZip.writeZip(mmZipPath);
+    const mmFromZip = await ingestZip(mmZipPath);
+    const mmCloneLog: Log = (await loadLog(mmClone.id)).log;
+    const mmZipLog: Log = (await loadLog(mmFromZip.id)).log;
+
+    const CAROL = 'carol@example.com';
+    const DANA = 'dana@example.org';
+    const EVE = 'eve@example.com';
+
+    record('mailmap: aliased dana commits collapse into carol (clone path)', () => {
+      const authors = authorMetrics(mmCloneLog);
+      if (authors.length !== 2) return `expected 2 authors, got ${authors.length}`;
+      if (authors.some((a) => a.email === DANA)) return 'dana@example.org survived the mailmap';
+      const carol = authors.find((a) => a.email === CAROL)!;
+      if (carol.churn !== 14 || carol.modifications !== 3 || !close(carol.ownership, 14 / 18)) {
+        return `carol: churn ${carol.churn}, mods ${carol.modifications}, own ${carol.ownership}`;
+      }
+      const eve = authors.find((a) => a.email === EVE)!;
+      if (eve.churn !== 4 || eve.modifications !== 1 || !close(eve.ownership, 4 / 18)) {
+        return `eve: churn ${eve.churn}, mods ${eve.modifications}, own ${eve.ownership}`;
+      }
+      return undefined;
+    });
+
+    record('mailmap: canonical name comes from the mailmap proper name', () => {
+      const carol = authorMetrics(mmCloneLog).find((a) => a.email === CAROL)!;
+      return carol.name === 'Carol Dev' ? undefined : `expected 'Carol Dev', got '${carol.name}'`;
+    });
+
+    record('mailmap: zip ingestion produces the same merged row store', () =>
+      JSON.stringify(mmZipLog) === JSON.stringify(mmCloneLog)
+        ? undefined
+        : 'zip and clone row stores differ for the mailmap fixture',
+    );
+
+    await recordAsync('manual merge: eve folded into carol recomputes ownership', async () => {
+      const merges = await saveMerge(mmClone.id, CAROL, [EVE]);
+      if (merges.length !== 1 || merges[0].aliases[0] !== EVE) {
+        return `unexpected merges: ${JSON.stringify(merges)}`;
+      }
+      const { log } = await loadLog(mmClone.id);
+      const authors = authorMetrics(log, {}, await loadMerges(mmClone.id));
+      if (authors.length !== 1) return `expected 1 author, got ${authors.length}`;
+      const carol = authors[0];
+      if (carol.email !== CAROL || carol.churn !== 18 || carol.modifications !== 4 || !close(carol.ownership, 1)) {
+        return `merged carol: churn ${carol.churn}, mods ${carol.modifications}, own ${carol.ownership}`;
+      }
+      return undefined;
+    });
+
+    await recordAsync('manual merge: undo restores the prior identities', async () => {
+      await deleteMerge(mmClone.id, CAROL);
+      const { log } = await loadLog(mmClone.id);
+      const authors = authorMetrics(log, {}, await loadMerges(mmClone.id));
+      if (authors.length !== 2) return `expected 2 authors after undo, got ${authors.length}`;
+      const carol = authors.find((a) => a.email === CAROL)!;
+      if (carol.churn !== 14 || !close(carol.ownership, 14 / 18)) {
+        return `carol after undo: churn ${carol.churn}, own ${carol.ownership}`;
+      }
+      if (!authors.some((a) => a.email === EVE)) return 'eve missing after undo';
+      return undefined;
     });
 
     // ── Zip ≡ clone ──────────────────────────────────────────────────────────
