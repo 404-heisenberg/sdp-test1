@@ -3,6 +3,8 @@ import path from 'node:path';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import { ingestUrl, ingestZip, IngestError } from './ingest.js';
+import type { IngestEvent } from './ingest.js';
+import { createJob, getJob, finishJob, failJob, updateJob } from './progress.js';
 import {
   listRepos,
   repoView,
@@ -29,6 +31,29 @@ export class HttpError extends Error {
   ) {
     super(message);
   }
+}
+
+/** Mirror an ingestion stage event into the job registry for client polling. */
+function applyIngestEvent(jobId: string, event: IngestEvent): void {
+  if (event.stage === 'cloning') {
+    updateJob(jobId, { stage: 'cloning', percent: event.percent });
+  } else if (event.stage === 'analyzing') {
+    updateJob(jobId, { stage: 'analyzing', commits: event.commits, rows: event.rows });
+  } else {
+    updateJob(jobId, { stage: event.stage });
+  }
+}
+
+/** Start ingestion in the background; the job id is the progress handle. */
+function startIngest(
+  jobId: string,
+  run: (onEvent: (event: IngestEvent) => void) => Promise<{ id: string; name: string; source: 'url' | 'zip'; origin?: string }>,
+): void {
+  void run((event) => applyIngestEvent(jobId, event))
+    .then((ingested) => finishJob(jobId, ingested))
+    .catch((err: unknown) =>
+      failJob(jobId, err instanceof Error ? err.message : 'Ingestion failed.'),
+    );
 }
 
 /** Parse the commit-set query params: from/to (ISO, [from, to)) or hashes (CSV). */
@@ -97,11 +122,24 @@ export function createApiRouter(): express.Router {
     }
   });
 
+  // Ingestion runs in the background; the client polls GET /ingest/:jobId.
   router.post('/repos/url', express.json(), async (req, res, next) => {
     try {
       const url = typeof req.body?.url === 'string' ? req.body.url : '';
       if (!url) throw new HttpError(400, 'Request body must include a "url" string.');
-      res.status(201).json(await ingestUrl(url));
+      const jobId = createJob('cloning');
+      startIngest(jobId, (onEvent) => ingestUrl(url, onEvent));
+      res.status(202).json({ jobId });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/ingest/:jobId', async (req, res, next) => {
+    try {
+      const job = getJob(req.params.jobId);
+      if (!job) throw new HttpError(404, `Unknown ingest job: ${req.params.jobId}`);
+      res.json(job);
     } catch (err) {
       next(err);
     }
@@ -115,11 +153,17 @@ export function createApiRouter(): express.Router {
         typeof req.body?.name === 'string' && req.body.name.trim() !== ''
           ? req.body.name.trim()
           : undefined;
-      res.status(201).json(await ingestZip(file.path, fallbackName));
+      const jobId = createJob('extracting');
+      const zipPath = file.path;
+      startIngest(jobId, (onEvent) =>
+        // The background job consumes the temp zip; drop it once that settles.
+        ingestZip(zipPath, fallbackName, onEvent).finally(() =>
+          fs.rm(zipPath, { force: true }).catch(() => {}),
+        ),
+      );
+      res.status(202).json({ jobId });
     } catch (err) {
       next(err);
-    } finally {
-      if (file) await fs.rm(file.path, { force: true }).catch(() => {});
     }
   });
 

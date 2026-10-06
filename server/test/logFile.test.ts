@@ -37,4 +37,24 @@ describe('writeLogFile / readLogFile', () => {
     await writeLogFile(file, { commits: [], rows: [] });
     expect(await readLogFile(file)).toEqual({ commits: [], rows: [] });
   });
+
+  it('keeps commas between write batches', async () => {
+    dir = await fs.mkdtemp(path.join(process.cwd(), '.tmp-logfile-'));
+    const file = path.join(dir, 'rat-log.json');
+    const commits = Array.from({ length: 501 }, (_, i) => ({
+      hash: `h${i}`,
+      authorName: 'A',
+      authorEmail: 'a@example.com',
+      date: '2026-01-01T00:00:00+00:00',
+      subject: 's',
+    }));
+    const rows = Array.from({ length: 501 }, (_, i) => ({
+      hash: `h${i}`,
+      path: `f${i}.txt`,
+      added: 1,
+      removed: 0,
+    }));
+    await writeLogFile(file, { commits, rows });
+    expect(await readLogFile(file)).toEqual({ commits, rows });
+  });
 });

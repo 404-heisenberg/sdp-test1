@@ -1,13 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
-import type { RepoSummary } from '../api.js';
+import type { IngestJob, RepoSummary } from '../api.js';
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function progressText(job: IngestJob): string {
+  if (job.stage === 'cloning') return `Cloning${job.percent !== undefined ? ` ${job.percent}%` : '…'}`;
+  if (job.stage === 'extracting') return 'Extracting zip…';
+  if (job.stage === 'analyzing') return `Analyzing ${job.commits ?? 0} commits / ${job.rows ?? 0} rows…`;
+  if (job.stage === 'saving') return 'Saving metrics…';
+  if (job.stage === 'done') return `Ingested ${job.result?.name ?? 'repository'}.`;
+  return job.error ?? 'Ingestion failed.';
+}
 
 export default function RepoListPage() {
   const [repos, setRepos] = useState<RepoSummary[] | null>(null);
   const [url, setUrl] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState<'url' | 'zip' | null>(null);
+  const [progress, setProgress] = useState<IngestJob | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
@@ -24,14 +36,26 @@ export default function RepoListPage() {
     void refresh();
   }, [refresh]);
 
+  async function waitForIngest(jobId: string): Promise<IngestJob> {
+    for (;;) {
+      const job = await api.ingestProgress(jobId);
+      setProgress(job);
+      if (job.stage === 'done') return job;
+      if (job.stage === 'error') throw new Error(job.error ?? 'Ingestion failed.');
+      await sleep(750);
+    }
+  }
+
   async function handleUrl(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     setNotice('');
+    setProgress(null);
     setBusy('url');
     try {
-      const added = await api.ingestUrl(url);
-      setNotice(`Ingested ${added.name}.`);
+      const { jobId } = await api.ingestUrl(url);
+      const done = await waitForIngest(jobId);
+      setNotice(progressText(done));
       setUrl('');
       await refresh();
     } catch (err) {
@@ -45,14 +69,16 @@ export default function RepoListPage() {
     e.preventDefault();
     setError('');
     setNotice('');
+    setProgress(null);
     if (!file) {
       setError('Choose a zip file first.');
       return;
     }
     setBusy('zip');
     try {
-      const added = await api.ingestZip(file);
-      setNotice(`Ingested ${added.name}.`);
+      const { jobId } = await api.ingestZip(file);
+      const done = await waitForIngest(jobId);
+      setNotice(progressText(done));
       setFile(null);
       if (fileInput.current) fileInput.current.value = '';
       await refresh();
@@ -118,6 +144,7 @@ export default function RepoListPage() {
       </div>
 
       {error && <div className="message error">{error}</div>}
+      {progress && progress.stage !== 'done' && <div className="message info">{progressText(progress)}</div>}
       {notice && <div className="message info">{notice}</div>}
 
       <div className="card">

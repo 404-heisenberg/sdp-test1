@@ -67,6 +67,16 @@ export interface CommitInfo {
   subject: string;
 }
 
+export interface IngestJob {
+  jobId: string;
+  stage: 'cloning' | 'extracting' | 'analyzing' | 'saving' | 'done' | 'error';
+  percent?: number;
+  commits?: number;
+  rows?: number;
+  result?: { id: string; name: string; source: 'url' | 'zip'; origin?: string };
+  error?: string;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const body = await res.json().catch(() => null);
@@ -84,7 +94,7 @@ export const api = {
   listRepos: () => request<RepoSummary[]>('/api/repos'),
 
   ingestUrl: (url: string) =>
-    request<RepoSummary>('/api/repos/url', {
+    request<{ jobId: string }>('/api/repos/url', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
@@ -93,8 +103,11 @@ export const api = {
   ingestZip: (file: File) => {
     const form = new FormData();
     form.append('zip', file);
-    return request<RepoSummary>('/api/repos/zip', { method: 'POST', body: form });
+    return request<{ jobId: string }>('/api/repos/zip', { method: 'POST', body: form });
   },
+
+  ingestProgress: (jobId: string) =>
+    request<IngestJob>(`/api/ingest/${encodeURIComponent(jobId)}`),
 
   deleteRepo: (id: string) => request<void>(`/api/repos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 

@@ -16,6 +16,7 @@ export async function writeLogFile(file: string, log: Log): Promise<void> {
   };
   await write('{"commits":[');
   for (let i = 0; i < log.commits.length; i += BATCH) {
+    if (i > 0) await write(',');
     await write(
       log.commits
         .slice(i, i + BATCH)
@@ -25,6 +26,7 @@ export async function writeLogFile(file: string, log: Log): Promise<void> {
   }
   await write('],"rows":[');
   for (let i = 0; i < log.rows.length; i += BATCH) {
+    if (i > 0) await write(',');
     await write(
       log.rows
         .slice(i, i + BATCH)
