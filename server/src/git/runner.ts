@@ -1,7 +1,8 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
-import type { Log } from './parseGitLog.js';
-import { parseNumstatLine } from './parseGitLog.js';
+import type { Log, LogCounts } from './parseGitLog.js';
+import { createLogAccumulator } from './parseGitLog.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -54,17 +55,15 @@ export async function runGit(
  * Deep-clone a remote URL (no shallow, no single-branch) so every commit reachable
  * from the remote HEAD exists locally. GIT_TERMINAL_PROMPT=0 makes a nonexistent or
  * private repository fail fast instead of hanging on a hidden credential prompt.
+ * git writes progress to stderr; onPercent picks the receive percentage out of it.
  */
-export async function gitClone(url: string, dest: string): Promise<void> {
+export async function gitClone(
+  url: string,
+  dest: string,
+  onPercent?: (percent: number) => void,
+): Promise<void> {
   try {
-    await execFileAsync(
-      'git',
-      ['clone', '--no-checkout', url, dest],
-      {
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-        maxBuffer: 2 * 1024 * 1024 * 1024 - 1,
-      },
-    );
+    await cloneChild(url, dest, onPercent);
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
     const detail = (e.stderr ?? e.message ?? '').toString().trim();
@@ -72,42 +71,76 @@ export async function gitClone(url: string, dest: string): Promise<void> {
   }
 }
 
+function cloneChild(url: string, dest: string, onPercent?: (percent: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'git',
+      ['clone', '--progress', '--no-checkout', url, dest],
+      { env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+    );
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+      const m = chunk.match(/(Receiving objects|Resolving deltas|Updating files):\s+\d+% \((\d+)%/);
+      if (m) onPercent?.(Number(m[2]));
+    });
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new GitError(stderr.trim() || `failed to clone ${url}`));
+    });
+    child.on('error', (err) => reject(new GitError(err.message)));
+  });
+}
+
 /**
  * Parse the output of LOG_ARGS into the flat row store: one entry per commit and
  * one row per (commit, non-binary file change). Rename rows resolve to the NEW path.
  */
 export function parseGitLogOutput(text: string): Log {
-  const commits: Log['commits'] = [];
-  const rows: Log['rows'] = [];
-  let currentHash: string | null = null;
+  const acc = createLogAccumulator();
+  acc.push(text);
+  return acc.result();
+}
 
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.replace(/\r$/, '');
-    if (line === '') continue;
-    if (line.includes('\x1f')) {
-      const parts = line.split('\x1f');
-      if (parts.length >= 5) {
-        currentHash = parts[0];
-        commits.push({
-          hash: parts[0],
-          authorName: parts[1],
-          authorEmail: parts[2],
-          date: parts[3],
-          subject: parts[4],
-        });
-        continue;
+/** Progress callback for the streamed log pass: running commit/row counts. */
+export type LogProgress = (counts: LogCounts) => void;
+
+/**
+ * Run the single git log pass and parse it incrementally as lines stream in.
+ * Keeps memory bounded to the row store itself, reports progress while git is
+ * still running, and — because parsing interleaves with stdout chunks — leaves
+ * the event loop free to serve other requests during large-repo ingestion.
+ */
+export function gitLogStream(repoPath: string, onProgress?: LogProgress): Promise<Log> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', LOG_ARGS, { cwd: repoPath });
+    const acc = createLogAccumulator();
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    const rl = createInterface({ input: child.stdout });
+    rl.on('line', (line: string) => {
+      acc.push(`${line}\n`);
+      onProgress?.(acc.counts());
+    });
+    rl.on('close', () => {
+      acc.end();
+      if (child.exitCode === 0) {
+        resolve(acc.result());
+      } else {
+        reject(new GitError(stderr.trim() || `git log exited with code ${child.exitCode}`));
       }
-    }
-    const row = parseNumstatLine(line);
-    if (row && currentHash !== null) {
-      rows.push({ hash: currentHash, ...row });
-    }
-  }
-  return { commits, rows };
+    });
+    child.on('error', (err) => {
+      reject(new GitError(err.message));
+    });
+  });
 }
 
 /** Run the single git log pass over a repository working tree and build the row store. */
-export async function gitLog(repoPath: string): Promise<Log> {
-  const out = await runGit(repoPath, LOG_ARGS);
-  return parseGitLogOutput(out);
+export async function gitLog(repoPath: string, onProgress?: LogProgress): Promise<Log> {
+  return gitLogStream(repoPath, onProgress);
 }

@@ -53,3 +53,67 @@ function renameNewPath(p: string): string | null {
   }
   return p;
 }
+
+export interface LogCounts {
+  commits: number;
+  rows: number;
+}
+
+/**
+ * Incremental builder for the row store, fed raw git output in arbitrary chunks.
+ * The streamed and batch parses share this accumulator, so both paths have
+ * identical semantics and huge logs never require one giant string in memory.
+ */
+export function createLogAccumulator() {
+  const commits: Commit[] = [];
+  const rows: Row[] = [];
+  let currentHash: string | null = null;
+  let carry = ''; // partial line carried between chunks
+
+  const handleLine = (rawLine: string): void => {
+    const line = rawLine.replace(/\r$/, '');
+    if (line === '') return;
+    if (line.includes('\x1f')) {
+      const parts = line.split('\x1f');
+      if (parts.length >= 5) {
+        currentHash = parts[0];
+        commits.push({
+          hash: parts[0],
+          authorName: parts[1],
+          authorEmail: parts[2],
+          date: parts[3],
+          subject: parts[4],
+        });
+        return;
+      }
+    }
+    const row = parseNumstatLine(line);
+    if (row && currentHash !== null) {
+      rows.push({ hash: currentHash, ...row });
+    }
+  };
+
+  return {
+    /** Feed the next chunk of raw output (any split point, newlines or not). */
+    push(chunk: string): void {
+      carry += chunk;
+      let idx: number;
+      while ((idx = carry.indexOf('\n')) !== -1) {
+        handleLine(carry.slice(0, idx));
+        carry = carry.slice(idx + 1);
+      }
+    },
+    /** Flush a trailing partial line at end of stream. */
+    end(): void {
+      if (carry !== '') handleLine(carry);
+      carry = '';
+    },
+    counts(): LogCounts {
+      return { commits: commits.length, rows: rows.length };
+    },
+    result(): Log {
+      this.end();
+      return { commits, rows };
+    },
+  };
+}

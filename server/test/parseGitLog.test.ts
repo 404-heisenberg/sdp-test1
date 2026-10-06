@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseNumstatLine } from '../src/git/parseGitLog.js';
+import { parseNumstatLine, createLogAccumulator } from '../src/git/parseGitLog.js';
+import { parseGitLogOutput } from '../src/git/runner.js';
 
 describe('parseNumstatLine', () => {
   it('parses a plain added/removed/path row', () => {
@@ -62,5 +63,42 @@ describe('parseNumstatLine', () => {
   it('returns null for junk', () => {
     expect(parseNumstatLine('')).toBeNull();
     expect(parseNumstatLine('garbage')).toBeNull();
+  });
+});
+
+const SAMPLE = [
+  'hash1\x1fAlice\x1falice@example.com\x1f2026-01-01T00:00:00+00:00\x1ffirst',
+  '10\t2\tsrc/main.ts',
+  '-\t-\tbin/logo.png',
+  '0\t5\told/removed.txt',
+  '',
+  'hash2\x1fBob\x1fbob@example.com\x1f2026-01-02T00:00:00+00:00\x1frename',
+  '0\t0\tsrc/{a.ts => b.ts}',
+  '3\t1\tsrc/deep/{x/y.ts => z/y.ts}',
+  '0\t0\told/x.ts => new/y.ts',
+  '',
+  'hash3\x1fAlice\x1falice@example.com\x1f2026-01-03T00:00:00+00:00\x1flast',
+  '1\t0\tREADME.md',
+  '',
+].join('\n');
+
+describe('createLogAccumulator (streamed parsing)', () => {
+  it('matches the batch parser when fed in arbitrary chunk splits', () => {
+    const batch = parseGitLogOutput(SAMPLE);
+    const acc = createLogAccumulator();
+    for (const chunk of SAMPLE.match(/[\s\S]{1,7}/g) ?? []) acc.push(chunk);
+    expect(acc.result()).toEqual(batch);
+  });
+
+  it('counts commits and rows for progress reporting', () => {
+    const acc = createLogAccumulator();
+    acc.push(SAMPLE);
+    expect(acc.counts()).toEqual({ commits: 3, rows: 6 });
+  });
+
+  it('does not count binary rows or pre-commit junk', () => {
+    const acc = createLogAccumulator();
+    acc.push('-\t-\tbin.png\ngarbage line\n');
+    expect(acc.counts()).toEqual({ commits: 0, rows: 0 });
   });
 });

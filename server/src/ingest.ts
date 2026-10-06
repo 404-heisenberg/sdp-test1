@@ -1,11 +1,21 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import extract from 'extract-zip';
-import { gitClone, gitLog } from './git/runner.js';
+import { gitClone, gitLogStream } from './git/runner.js';
+import { writeLogFile } from './logFile.js';
 import { getReposDir } from './paths.js';
 import type { Log } from './git/parseGitLog.js';
 
 export class IngestError extends Error {}
+
+/** Stage events emitted while an ingestion runs, for progress reporting. */
+export type IngestEvent =
+  | { stage: 'cloning'; percent?: number }
+  | { stage: 'extracting' }
+  | { stage: 'analyzing'; commits: number; rows: number }
+  | { stage: 'saving' };
+
+export type IngestObserver = (event: IngestEvent) => void;
 
 export interface Ingested {
   id: string;
@@ -54,8 +64,13 @@ async function ingestInto(
   source: 'url' | 'zip',
   workTree: string,
   origin?: string,
+  onEvent?: IngestObserver,
 ): Promise<Ingested> {
-  const log: Log = await gitLog(workTree);
+  // Streamed log pass: counts flow to the observer while git is still running.
+  const log: Log = await gitLogStream(workTree, ({ commits, rows }) =>
+    onEvent?.({ stage: 'analyzing', commits, rows }),
+  );
+  onEvent?.({ stage: 'saving' });
   const id = slugify(name);
   const dest = path.join(getReposDir(), id);
   await fs.mkdir(getReposDir(), { recursive: true });
@@ -64,12 +79,12 @@ async function ingestInto(
     path.join(dest, 'rat-meta.json'),
     JSON.stringify({ id, name, source, origin, ingestedAt: new Date().toISOString() }, null, 2),
   );
-  await fs.writeFile(path.join(dest, 'rat-log.json'), JSON.stringify(log));
+  await writeLogFile(path.join(dest, 'rat-log.json'), log);
   return { id, name, source, origin };
 }
 
 /** Ingest from a remote URL: deep clone, then run the single log pass. */
-export async function ingestUrl(rawUrl: string): Promise<Ingested> {
+export async function ingestUrl(rawUrl: string, onEvent?: IngestObserver): Promise<Ingested> {
   const url = rawUrl.trim();
   if (!/^(https?|git|ssh|file):\/\/|^git@/.test(url)) {
     throw new IngestError(`Invalid git URL: ${rawUrl}`);
@@ -77,8 +92,8 @@ export async function ingestUrl(rawUrl: string): Promise<Ingested> {
   await fs.mkdir(getReposDir(), { recursive: true });
   const staging = await fs.mkdtemp(path.join(getReposDir(), '.staging-'));
   try {
-    await gitClone(url, staging);
-    return await ingestInto(nameFromUrl(url), 'url', staging, url);
+    await gitClone(url, staging, (percent) => onEvent?.({ stage: 'cloning', percent }));
+    return await ingestInto(nameFromUrl(url), 'url', staging, url, onEvent);
   } catch (err) {
     await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
     if (err instanceof IngestError) throw err;
@@ -88,10 +103,15 @@ export async function ingestUrl(rawUrl: string): Promise<Ingested> {
 }
 
 /** Ingest from an uploaded zip: extract, find .git (one level deep), log pass. */
-export async function ingestZip(zipPath: string, fallbackName?: string): Promise<Ingested> {
+export async function ingestZip(
+  zipPath: string,
+  fallbackName?: string,
+  onEvent?: IngestObserver,
+): Promise<Ingested> {
   await fs.mkdir(getReposDir(), { recursive: true });
   const staging = await fs.mkdtemp(path.join(getReposDir(), '.staging-'));
   try {
+    onEvent?.({ stage: 'extracting' });
     await extract(zipPath, { dir: staging });
     const entries: string[] = [];
     const walk = async (dir: string) => {
@@ -112,7 +132,7 @@ export async function ingestZip(zipPath: string, fallbackName?: string): Promise
       fallbackName ??
       path.basename(gitRoot !== staging ? gitRoot : zipPath).replace(/\.zip$/i, '') ??
       'zip-repo';
-    const ingested = await ingestInto(name, 'zip', gitRoot, undefined);
+    const ingested = await ingestInto(name, 'zip', gitRoot, undefined, onEvent);
     // The worktree moved into the registry; drop any zip leftovers around it.
     await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
     return ingested;
