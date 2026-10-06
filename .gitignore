@@ -1,2 +1,15 @@
 # Local test material — not part of the repo
 test_brief.pdf
+
+# Dependencies
+node_modules/
+
+# RAT runtime data (ingested repositories, row stores, uploads)
+data/
+
+# Build output
+client/dist/
+
+# Misc
+*.log
+.DS_Store
