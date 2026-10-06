@@ -164,6 +164,68 @@ export async function runFixtureChecks(): Promise<Check[]> {
       }),
     );
 
+    // ── Combined filters (T3): author × commit set × path ───────────────────
+    // alice: c1 (+28/0), c5 (0/4), c7 (binary — no rows) → |H| = 3.
+    record('filters: author restricts H and sums (alice)', () =>
+      expectPathMetrics(pathMetrics(cloneLog, { author: AUTHORS.alice.email }), {
+        added: 28, removed: 4, growth: 24, churn: 32, modifications: 2, commitSetSize: 3,
+        modificationFrequency: 2 / 3, churnRate: 32 / 3,
+      }),
+    );
+    // bob in [01-02, 01-06): c2 (+4/3) + c3 (+2/2) → churn 11 over |H| = 2.
+    record('filters: author + time range combine (bob)', () =>
+      expectPathMetrics(
+        pathMetrics(cloneLog, {
+          author: AUTHORS.bob.email,
+          commitSet: { kind: 'range', from: '2024-01-02T00:00:00Z', to: '2024-01-06T00:00:00Z' },
+        }),
+        {
+          added: 6, removed: 5, growth: 1, churn: 11, modifications: 2, commitSetSize: 2,
+          modificationFrequency: 1, churnRate: 5.5,
+        },
+      ),
+    );
+    // carol among [c1, c4, c8]: c4 (docs +4/0) + c8 (core.ts +1/0) → churn 5, |H| = 2.
+    record('filters: author + manual list combine (carol)', () =>
+      expectPathMetrics(
+        pathMetrics(cloneLog, {
+          author: AUTHORS.carol.email,
+          commitSet: { kind: 'list', hashes: [h('c1 initial'), h('c4 docs'), h('c8 rename with edit')] },
+        }),
+        {
+          added: 5, removed: 0, growth: 5, churn: 5, modifications: 2, commitSetSize: 2,
+          modificationFrequency: 1, churnRate: 2.5,
+        },
+      ),
+    );
+    // [c1, c4] scoped to docs: only c4's guide.md (+4/0), but |H| stays 2.
+    record('filters: manual list + path scope combine', () =>
+      expectPathMetrics(
+        pathMetrics(cloneLog, {
+          path: 'docs',
+          commitSet: { kind: 'list', hashes: [h('c1 initial'), h('c4 docs')] },
+        }),
+        {
+          added: 4, removed: 0, growth: 4, churn: 4, modifications: 1, commitSetSize: 2,
+          modificationFrequency: 0.5, churnRate: 2,
+        },
+      ),
+    );
+    record('filters: unknown author yields guarded zeros', () =>
+      expectPathMetrics(pathMetrics(cloneLog, { author: 'nobody@example.com' }), {
+        added: 0, removed: 0, growth: 0, churn: 0, modifications: 0, commitSetSize: 0, modificationFrequency: 0, churnRate: 0,
+      }),
+    );
+    record('filters: author metrics under an author filter collapse to one owner', () => {
+      const authors = authorMetrics(cloneLog, { author: AUTHORS.alice.email });
+      if (authors.length !== 1) return `expected 1 author, got ${authors.length}`;
+      const alice = authors[0];
+      if (alice.email !== AUTHORS.alice.email || alice.churn !== 32 || !close(alice.ownership, 1)) {
+        return `alice: churn ${alice.churn}, own ${alice.ownership}`;
+      }
+      return undefined;
+    });
+
     // ── Author metrics ───────────────────────────────────────────────────────
     record('author metrics: whole repository', () => {
       const authors = authorMetrics(cloneLog);

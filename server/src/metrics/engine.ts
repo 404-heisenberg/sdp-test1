@@ -11,6 +11,8 @@ export type CommitSetSelection =
 export interface MetricsQuery {
   /** File or directory path. '' or undefined = whole repository (root). Recursive below directories. */
   path?: string;
+  /** Post-mailmap author email. Restricts H to that author's commits (case-insensitive). */
+  author?: string;
   commitSet?: CommitSetSelection;
 }
 
@@ -34,21 +36,25 @@ export interface AuthorMetrics {
   ownership: number; // ω = λ_a/λ (0 when λ = 0)
 }
 
-function selectCommits(log: Log, sel: CommitSetSelection): Commit[] {
-  switch (sel.kind) {
-    case 'all':
-      return log.commits;
-    case 'range':
-      return log.commits.filter(
-        (c) =>
-          (sel.from === undefined || c.date >= sel.from) &&
-          (sel.to === undefined || c.date < sel.to),
-      );
-    case 'list': {
-      const wanted = new Set(sel.hashes);
-      return log.commits.filter((c) => wanted.has(c.hash));
-    }
+function selectCommits(log: Log, sel: CommitSetSelection, author?: string): Commit[] {
+  let selected: Commit[];
+  if (sel.kind === 'all') {
+    selected = log.commits;
+  } else if (sel.kind === 'range') {
+    // Compare instants, not raw strings: %cI dates can carry mixed UTC offsets.
+    const from = sel.from === undefined ? undefined : Date.parse(sel.from);
+    const to = sel.to === undefined ? undefined : Date.parse(sel.to);
+    selected = log.commits.filter((c) => {
+      const t = Date.parse(c.date);
+      return (from === undefined || t >= from) && (to === undefined || t < to);
+    });
+  } else {
+    const wanted = new Set(sel.hashes);
+    selected = log.commits.filter((c) => wanted.has(c.hash));
   }
+  if (author === undefined) return selected;
+  const want = author.toLowerCase();
+  return selected.filter((c) => c.authorEmail.toLowerCase() === want);
 }
 
 /** A row lies under a path when it is that file or lives anywhere below the directory. */
@@ -69,8 +75,7 @@ function touched(added: number, removed: number): boolean {
 }
 
 export function pathMetrics(log: Log, query: MetricsQuery = {}): PathMetrics {
-  const sel = query.commitSet ?? { kind: 'all' };
-  const commits = selectCommits(log, sel);
+  const commits = selectCommits(log, query.commitSet ?? { kind: 'all' }, query.author);
   const inSet = new Set(commits.map((c) => c.hash));
   const path = normalizePath(query.path);
 
@@ -102,8 +107,7 @@ export function pathMetrics(log: Log, query: MetricsQuery = {}): PathMetrics {
 }
 
 export function fileMetrics(log: Log, query: MetricsQuery = {}): PathMetrics[] {
-  const sel = query.commitSet ?? { kind: 'all' };
-  const commits = selectCommits(log, sel);
+  const commits = selectCommits(log, query.commitSet ?? { kind: 'all' }, query.author);
   const inSet = new Set(commits.map((c) => c.hash));
   const scope = normalizePath(query.path);
 
@@ -145,8 +149,7 @@ export type TreeEntry = PathMetrics & { kind: 'dir' | 'file' };
 
 /** Immediate children (directories and files) of query.path, each with its recursive metrics. */
 export function treeMetrics(log: Log, query: MetricsQuery = {}): TreeEntry[] {
-  const sel = query.commitSet ?? { kind: 'all' };
-  const commits = selectCommits(log, sel);
+  const commits = selectCommits(log, query.commitSet ?? { kind: 'all' }, query.author);
   const inSet = new Set(commits.map((c) => c.hash));
   const scope = normalizePath(query.path);
 
@@ -204,8 +207,7 @@ export interface FileHistoryEntry {
 
 /** Per-commit adds/removes for a path (file: exact; directory: sums below it), newest first. */
 export function fileHistory(log: Log, query: MetricsQuery = {}): FileHistoryEntry[] {
-  const sel = query.commitSet ?? { kind: 'all' };
-  const commits = selectCommits(log, sel);
+  const commits = selectCommits(log, query.commitSet ?? { kind: 'all' }, query.author);
   const path = normalizePath(query.path);
 
   const rowsByHash = new Map<string, Row[]>();
@@ -239,8 +241,7 @@ export function fileHistory(log: Log, query: MetricsQuery = {}): FileHistoryEntr
 }
 
 export function authorMetrics(log: Log, query: MetricsQuery = {}): AuthorMetrics[] {
-  const sel = query.commitSet ?? { kind: 'all' };
-  const commits = selectCommits(log, sel);
+  const commits = selectCommits(log, query.commitSet ?? { kind: 'all' }, query.author);
   const inSet = new Set(commits.map((c) => c.hash));
   const commitByHash = new Map(log.commits.map((c) => [c.hash, c]));
   const scope = normalizePath(query.path);

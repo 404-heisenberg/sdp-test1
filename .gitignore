@@ -13,3 +13,6 @@ client/dist/
 # Misc
 *.log
 .DS_Store
+
+# Local scratch clones (author-merge experiments) — never part of the app
+.scratch-mailmap/

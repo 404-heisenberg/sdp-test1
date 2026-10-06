@@ -42,6 +42,14 @@ function parseCommitSet(query: Request['query']): CommitSetSelection | undefined
   if (hashesRaw !== undefined) {
     return { kind: 'list', hashes: hashesRaw.split(',').map((h) => h.trim()).filter(Boolean) };
   }
+  for (const [label, value] of [
+    ['from', from],
+    ['to', to],
+  ] as const) {
+    if (value !== undefined && Number.isNaN(Date.parse(value))) {
+      throw new HttpError(400, `Invalid ${label} timestamp: ${value}`);
+    }
+  }
   return { kind: 'range', from, to };
 }
 
@@ -49,7 +57,11 @@ function parseMetricsQuery(req: Request) {
   const commitSet = parseCommitSet(req.query);
   const q = req.query.path;
   const pathFilter = typeof q === 'string' && q !== '' ? q : undefined;
-  return commitSet === undefined && pathFilter === undefined ? {} : { path: pathFilter, commitSet };
+  const a = req.query.author;
+  const author = typeof a === 'string' && a !== '' ? a : undefined;
+  return commitSet === undefined && pathFilter === undefined && author === undefined
+    ? {}
+    : { path: pathFilter, commitSet, author };
 }
 
 function parseIntParam(req: Request, name: string, fallback: number): number {

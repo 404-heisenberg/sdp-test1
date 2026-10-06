@@ -300,3 +300,107 @@ describe('fileHistory — per-commit adds/removes for a path', () => {
     expect(fileHistory(log, { path: 'missing.txt' })).toEqual([]);
   });
 });
+
+describe('T3 filters — author + commit set combine', () => {
+  it('author filter restricts H to that author and all sums follow', () => {
+    // alice owns c1 (+10/0), c3 (0/4), c5 (+7/0) → |H| = 3.
+    const m = pathMetrics(log, { author: 'alice@x' });
+    expect(m.commitSetSize).toBe(3);
+    expect(m.added).toBe(17);
+    expect(m.removed).toBe(4);
+    expect(m.growth).toBe(13);
+    expect(m.churn).toBe(21);
+    expect(m.modifications).toBe(3);
+    expect(m.modificationFrequency).toBeCloseTo(1, 10);
+    expect(m.churnRate).toBeCloseTo(7, 10);
+  });
+
+  it('author and path filters combine', () => {
+    // bob owns c2, c4; under docs only readme.md (+5/0 in c2).
+    const m = pathMetrics(log, { author: 'bob@x', path: 'docs' });
+    expect(m.commitSetSize).toBe(2);
+    expect(m.added).toBe(5);
+    expect(m.removed).toBe(0);
+    expect(m.churn).toBe(5);
+    expect(m.modifications).toBe(1);
+    expect(m.modificationFrequency).toBeCloseTo(0.5, 10);
+    expect(m.churnRate).toBeCloseTo(2.5, 10);
+  });
+
+  it('author and manual hash list combine (list intersects with the author)', () => {
+    const m = pathMetrics(log, {
+      author: 'bob@x',
+      commitSet: { kind: 'list', hashes: ['c1', 'c2', 'c4'] },
+    });
+    expect(m.commitSetSize).toBe(2); // c1 is alice's and drops out
+    expect(m.added).toBe(10);
+    expect(m.removed).toBe(4);
+    expect(m.churn).toBe(14);
+    expect(m.modifications).toBe(2);
+    expect(m.churnRate).toBeCloseTo(7, 10);
+  });
+
+  it('author and time range combine', () => {
+    // [01-02, 01-05) keeps c2..c4; alice only has c3 (deletion 0/4).
+    const m = pathMetrics(log, {
+      author: 'alice@x',
+      commitSet: { kind: 'range', from: '2024-01-02T00:00:00Z', to: '2024-01-05T00:00:00Z' },
+    });
+    expect(m.commitSetSize).toBe(1);
+    expect(m.added).toBe(0);
+    expect(m.removed).toBe(4);
+    expect(m.modifications).toBe(1);
+    expect(m.modificationFrequency).toBeCloseTo(1, 10);
+    expect(m.churnRate).toBeCloseTo(4, 10);
+  });
+
+  it('unknown author yields guarded zeros without errors', () => {
+    expect(pathMetrics(log, { author: 'nobody@x' })).toEqual({
+      path: '',
+      added: 0,
+      removed: 0,
+      growth: 0,
+      churn: 0,
+      modifications: 0,
+      commitSetSize: 0,
+      modificationFrequency: 0,
+      churnRate: 0,
+    });
+  });
+
+  it('author filter flows through file, tree, history and author metrics', () => {
+    const files = fileMetrics(log, { author: 'alice@x' });
+    expect(files.map((f) => f.path).sort()).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+
+    const tree = treeMetrics(log, { author: 'alice@x' });
+    expect(tree.find((t) => t.path === 'docs')).toBeUndefined();
+    expect(tree.find((t) => t.path === 'src')?.commitSetSize).toBe(3);
+
+    const history = fileHistory(log, { author: 'bob@x', path: 'src/a.ts' });
+    expect(history.map((h) => h.hash)).toEqual(['c4', 'c2']);
+
+    const authors = authorMetrics(log, { author: 'alice@x' });
+    expect(authors).toHaveLength(1);
+    expect(authors[0]).toMatchObject({ email: 'alice@x', churn: 21 });
+    expect(authors[0].ownership).toBeCloseTo(1, 10);
+  });
+
+  it('time range compares instants, not raw strings (mixed UTC offsets)', () => {
+    // x2 is 2024-01-01T23:00Z written with a +02:00 offset — a lexicographic
+    // string compare would exclude it from [01-01T22:00Z, 01-02T00:00Z).
+    const offsetLog: Log = {
+      commits: [
+        { hash: 'x2', authorName: 'A', authorEmail: 'a@x', date: '2024-01-02T01:00:00+02:00', subject: 'x2' },
+        { hash: 'x1', authorName: 'A', authorEmail: 'a@x', date: '2024-01-01T23:30:00Z', subject: 'x1' },
+      ],
+      rows: [
+        { hash: 'x2', path: 'f.ts', added: 1, removed: 0 },
+        { hash: 'x1', path: 'f.ts', added: 1, removed: 0 },
+      ],
+    };
+    const m = pathMetrics(offsetLog, {
+      commitSet: { kind: 'range', from: '2024-01-01T22:00:00Z', to: '2024-01-02T00:00:00Z' },
+    });
+    expect(m.commitSetSize).toBe(2);
+  });
+});

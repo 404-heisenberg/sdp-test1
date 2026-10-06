@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import type { AuthorMetrics, FileHistoryEntry, RepoView } from '../api.js';
 import Breadcrumb from '../components/Breadcrumb.js';
+import { filtersFromParams, filtersToParams } from '../components/FilterBar.js';
 import Metric from '../components/Metric.js';
 import MetricsTable from '../components/MetricsTable.js';
 import type { Column } from '../components/MetricsTable.js';
@@ -39,6 +40,8 @@ const authorColumns: Column<AuthorMetrics>[] = [
 export default function FilePage() {
   const { id } = useParams<{ id: string }>();
   const path = useParams<{ '*': string }>()['*'] ?? '';
+  const [searchParams] = useSearchParams();
+  const filterParams = filtersToParams(filtersFromParams(searchParams));
   const [view, setView] = useState<RepoView | null>(null);
   const [history, setHistory] = useState<FileHistoryEntry[] | null>(null);
   const [error, setError] = useState('');
@@ -46,7 +49,7 @@ export default function FilePage() {
   useEffect(() => {
     if (!id) return;
     let alive = true;
-    const params: Record<string, string> = { path };
+    const params: Record<string, string> = { path, ...filterParams };
     Promise.all([api.repoView(id, params), api.fileHistory(id, params)])
       .then(([v, h]) => {
         if (alive) {
@@ -61,7 +64,7 @@ export default function FilePage() {
     return () => {
       alive = false;
     };
-  }, [id, path]);
+  }, [id, path, filterParams]);
 
   if (error) {
     return (
@@ -91,7 +94,7 @@ export default function FilePage() {
       <Link className="back-link" to="/">
         ← All repositories
       </Link>
-      <Breadcrumb id={view.meta.id} name={view.meta.name} path={path} />
+      <Breadcrumb id={view.meta.id} name={view.meta.name} path={path} params={filterParams} />
 
       <div className="card">
         <h2>File metrics</h2>

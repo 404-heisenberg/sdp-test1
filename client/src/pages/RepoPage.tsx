@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams, useParams } from 'react-router-dom';
 import { api } from '../api.js';
 import type { AuthorMetrics, TreeEntry, TreeResponse } from '../api.js';
 import Breadcrumb, { browseUrl, fileUrl } from '../components/Breadcrumb.js';
+import FilterBar from '../components/FilterBar.js';
+import { filtersFromParams, filtersToParams } from '../components/FilterBar.js';
+import type { FilterState } from '../components/FilterBar.js';
 import Metric from '../components/Metric.js';
 import MetricsTable from '../components/MetricsTable.js';
 import type { Column } from '../components/MetricsTable.js';
@@ -12,7 +15,7 @@ function basename(p: string): string {
   return p.slice(p.lastIndexOf('/') + 1);
 }
 
-const childColumns = (id: string): Column<TreeEntry>[] => [
+const childColumns = (id: string, filterParams: Record<string, string>): Column<TreeEntry>[] => [
   {
     key: 'path',
     label: 'Name',
@@ -21,9 +24,9 @@ const childColumns = (id: string): Column<TreeEntry>[] => [
       <span className="tree-name">
         <span className={`kind-badge kind-${c.kind}`}>{c.kind === 'dir' ? 'DIR' : 'FILE'}</span>
         {c.kind === 'dir' ? (
-          <Link to={browseUrl(id, c.path)}>{basename(c.path)}</Link>
+          <Link to={browseUrl(id, c.path, filterParams)}>{basename(c.path)}</Link>
         ) : (
-          <Link to={fileUrl(id, c.path)}>{basename(c.path)}</Link>
+          <Link to={fileUrl(id, c.path, filterParams)}>{basename(c.path)}</Link>
         )}
       </span>
     ),
@@ -68,19 +71,28 @@ export default function RepoPage() {
   const { id } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const path = searchParams.get('path') ?? '';
+  const filters = useMemo(() => filtersFromParams(searchParams), [searchParams]);
+  const filterParams = useMemo(() => filtersToParams(filters), [filters]);
+  // Dropdown options show every author within the path/commit-set scope,
+  // independent of the author filter itself.
+  const scopeParams = useMemo(() => filtersToParams({ ...filters, author: '' }), [filters]);
   const [tree, setTree] = useState<TreeResponse | null>(null);
   const [authors, setAuthors] = useState<AuthorMetrics[] | null>(null);
+  const [scopeAuthors, setScopeAuthors] = useState<AuthorMetrics[]>([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!id) return;
     let alive = true;
     const params: Record<string, string> = path === '' ? {} : { path };
-    Promise.all([api.repoTree(id, params), api.repoAuthors(id, params)])
-      .then(([t, a]) => {
+    const withFilters = { ...params, ...filterParams };
+    const scope = { ...params, ...scopeParams };
+    Promise.all([api.repoTree(id, withFilters), api.repoAuthors(id, withFilters), api.repoAuthors(id, scope)])
+      .then(([t, a, sa]) => {
         if (alive) {
           setTree(t);
           setAuthors(a);
+          setScopeAuthors(sa);
           setError('');
         }
       })
@@ -90,7 +102,14 @@ export default function RepoPage() {
     return () => {
       alive = false;
     };
-  }, [id, path]);
+  }, [id, path, filterParams, scopeParams]);
+
+  const applyFilters = (next: FilterState) => {
+    const sp = new URLSearchParams();
+    if (path) sp.set('path', path);
+    for (const [k, v] of Object.entries(filtersToParams(next))) sp.set(k, v);
+    setSearchParams(sp);
+  };
 
   if (error) {
     return (
@@ -120,11 +139,13 @@ export default function RepoPage() {
       <Link className="back-link" to="/">
         ← All repositories
       </Link>
-      <Breadcrumb id={tree.meta.id} name={tree.meta.name} path={tree.path} />
+      <Breadcrumb id={tree.meta.id} name={tree.meta.name} path={tree.path} params={filterParams} />
       <p className="repo-meta">
         {tree.meta.source === 'url' ? `Cloned from ${tree.meta.origin ?? 'unknown'}` : 'Uploaded zip'} · ingested{' '}
         {new Date(tree.meta.ingestedAt).toLocaleString()} · {r.commitSetSize} non-merge commits
       </p>
+
+      {id && <FilterBar id={id} scopeAuthors={scopeAuthors} filters={filters} onChange={applyFilters} />}
 
       <div className="card">
         <h2>{tree.path === '' ? 'Repository metrics' : 'Directory metrics'}</h2>
@@ -148,7 +169,7 @@ export default function RepoPage() {
         <h2>{tree.path === '' ? 'Contents' : 'Contents of ' + tree.path}</h2>
         {id && (
           <MetricsTable
-            columns={childColumns(id)}
+            columns={childColumns(id, filterParams)}
             rows={tree.children}
             rowKey={(c) => c.path}
             initialSort={{ key: 'churn', dir: 'desc' }}
