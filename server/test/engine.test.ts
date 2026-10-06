@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { pathMetrics, fileMetrics, authorMetrics } from '../src/metrics/engine.js';
+import {
+  pathMetrics,
+  fileMetrics,
+  authorMetrics,
+  treeMetrics,
+  fileHistory,
+} from '../src/metrics/engine.js';
 import type { Log } from '../src/git/parseGitLog.js';
 
 // Synthetic log, hand-computed expectations.
@@ -187,5 +193,110 @@ describe('authorMetrics', () => {
     expect(authors).toHaveLength(1);
     expect(authors[0].email).toBe('alice@x');
     expect(authors[0].churn).toBe(17);
+  });
+});
+
+describe('treeMetrics — immediate children of a directory', () => {
+  it('lists root children as directories with recursive sums', () => {
+    const children = treeMetrics(log);
+    expect(children.map((c) => `${c.kind}:${c.path}`)).toEqual(['dir:src', 'dir:docs']);
+    const src = children[0];
+    expect(src.added).toBe(22); // 10 + 3 + 2 + 7
+    expect(src.removed).toBe(8); // 2 + 4 + 2
+    expect(src.growth).toBe(14);
+    expect(src.churn).toBe(30);
+    expect(src.modifications).toBe(5); // every commit touches src
+    expect(src.commitSetSize).toBe(5);
+    expect(src.modificationFrequency).toBeCloseTo(1, 10);
+    expect(src.churnRate).toBeCloseTo(6, 10);
+    const docs = children[1];
+    expect(docs.added).toBe(5);
+    expect(docs.removed).toBe(0);
+    expect(docs.modifications).toBe(1);
+    expect(docs.modificationFrequency).toBeCloseTo(0.2, 10);
+    expect(docs.churnRate).toBeCloseTo(1, 10);
+  });
+
+  it('lists the files inside a directory, sorted by churn', () => {
+    const children = treeMetrics(log, { path: 'src' });
+    expect(children.map((c) => `${c.kind}:${c.path}`)).toEqual([
+      'file:src/a.ts',
+      'file:src/c.ts',
+      'file:src/b.ts',
+      'file:src/renamed.ts',
+    ]);
+    const a = children[0];
+    expect(a.added).toBe(15);
+    expect(a.removed).toBe(4);
+    expect(a.churn).toBe(19);
+    expect(a.modifications).toBe(3);
+    expect(a.modificationFrequency).toBeCloseTo(0.6, 10);
+    expect(a.churnRate).toBeCloseTo(3.8, 10);
+    expect(children[3].churn).toBe(0); // pure rename row only
+  });
+
+  it('honours a commit-set filter', () => {
+    const children = treeMetrics(log, { commitSet: { kind: 'list', hashes: ['c2'] } });
+    expect(children).toHaveLength(2);
+    for (const c of children) {
+      expect(c.commitSetSize).toBe(1);
+      expect(c.modifications).toBe(1);
+      expect(c.modificationFrequency).toBeCloseTo(1, 10);
+    }
+    expect(children.find((c) => c.path === 'src')!.churn).toBe(5); // +3/2
+    expect(children.find((c) => c.path === 'docs')!.churn).toBe(5); // +5/0
+  });
+
+  it('returns no children for an empty commit set', () => {
+    expect(treeMetrics(log, { commitSet: { kind: 'list', hashes: [] } })).toEqual([]);
+  });
+
+  it('returns no children for a path with no rows below it', () => {
+    expect(treeMetrics(log, { path: 'nope' })).toEqual([]);
+  });
+});
+
+describe('fileHistory — per-commit adds/removes for a path', () => {
+  it('lists commits newest-first with their adds/removes and commit context', () => {
+    const history = fileHistory(log, { path: 'src/a.ts' });
+    expect(history.map((h) => h.hash)).toEqual(['c4', 'c2', 'c1']);
+    expect(history[0]).toEqual({
+      hash: 'c4',
+      authorName: 'Bob',
+      date: '2024-01-04T10:00:00Z',
+      subject: 'c4',
+      added: 2,
+      removed: 2,
+    });
+    expect(history[1].added).toBe(3);
+    expect(history[1].removed).toBe(2);
+    expect(history[2]).toMatchObject({ hash: 'c1', added: 10, removed: 0 });
+  });
+
+  it('attributes pure renames to the new path with zero churn', () => {
+    const history = fileHistory(log, { path: 'src/renamed.ts' });
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ hash: 'c4', added: 0, removed: 0 });
+  });
+
+  it('sums a directory per commit over everything below it', () => {
+    const history = fileHistory(log, { path: 'src' });
+    expect(history.map((h) => [h.hash, h.added, h.removed])).toEqual([
+      ['c5', 7, 0],
+      ['c4', 2, 2],
+      ['c3', 0, 4],
+      ['c2', 3, 2],
+      ['c1', 10, 0],
+    ]);
+  });
+
+  it('honours a commit-set filter and returns [] for untouched paths', () => {
+    const history = fileHistory(log, {
+      path: 'docs/readme.md',
+      commitSet: { kind: 'range', from: '2024-01-02T00:00:00Z', to: '2024-01-04T00:00:00Z' },
+    });
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ hash: 'c2', added: 5, removed: 0 });
+    expect(fileHistory(log, { path: 'missing.txt' })).toEqual([]);
   });
 });

@@ -12,7 +12,13 @@ import {
   loadLog,
 } from './registry.js';
 import { getDataDir } from './paths.js';
-import { fileMetrics, authorMetrics } from './metrics/engine.js';
+import {
+  pathMetrics,
+  fileMetrics,
+  authorMetrics,
+  treeMetrics,
+  fileHistory,
+} from './metrics/engine.js';
 import type { CommitSetSelection } from './metrics/engine.js';
 
 export class HttpError extends Error {
@@ -118,6 +124,33 @@ export function createApiRouter(): express.Router {
     try {
       const topFiles = parseIntParam(req, 'top', 25);
       res.json(await repoView(req.params.id, parseMetricsQuery(req), topFiles));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Directory browsing: metrics at the path plus its immediate children (dirs and files).
+  router.get('/repos/:id/tree', async (req, res, next) => {
+    try {
+      const { meta, log } = await loadLog(req.params.id);
+      const query = parseMetricsQuery(req);
+      res.json({
+        meta,
+        path: query.path ?? '',
+        repository: pathMetrics(log, query),
+        children: treeMetrics(log, query),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Per-commit adds/removes for a file or directory (newest first).
+  router.get('/repos/:id/history', async (req, res, next) => {
+    try {
+      const { log } = await loadLog(req.params.id);
+      const limit = parseIntParam(req, 'limit', 500);
+      res.json(fileHistory(log, parseMetricsQuery(req)).slice(0, limit));
     } catch (err) {
       next(err);
     }

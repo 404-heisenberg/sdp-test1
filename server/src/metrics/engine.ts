@@ -1,4 +1,4 @@
-import type { Commit, Log } from '../git/parseGitLog.js';
+import type { Commit, Log, Row } from '../git/parseGitLog.js';
 
 /** How the commit set H is selected. Default (omitted) is every commit. */
 export type CommitSetSelection =
@@ -139,6 +139,103 @@ export function fileMetrics(log: Log, query: MetricsQuery = {}): PathMetrics[] {
       };
     })
     .sort((a, b) => b.churn - a.churn || a.path.localeCompare(b.path));
+}
+
+export type TreeEntry = PathMetrics & { kind: 'dir' | 'file' };
+
+/** Immediate children (directories and files) of query.path, each with its recursive metrics. */
+export function treeMetrics(log: Log, query: MetricsQuery = {}): TreeEntry[] {
+  const sel = query.commitSet ?? { kind: 'all' };
+  const commits = selectCommits(log, sel);
+  const inSet = new Set(commits.map((c) => c.hash));
+  const scope = normalizePath(query.path);
+
+  const children = new Map<
+    string,
+    { kind: 'dir' | 'file'; added: number; removed: number; mods: Set<string> }
+  >();
+  for (const row of log.rows) {
+    if (!inSet.has(row.hash)) continue;
+    if (!underPath(row.path, scope)) continue;
+    const rel = scope === '' ? row.path : row.path.slice(scope.length + 1);
+    if (rel === '') continue; // a row on the scope path itself has no child here
+    const slash = rel.indexOf('/');
+    const name = slash === -1 ? rel : rel.slice(0, slash);
+    const childPath = scope === '' ? name : `${scope}/${name}`;
+    let agg = children.get(childPath);
+    if (!agg) {
+      agg = { kind: slash === -1 ? 'file' : 'dir', added: 0, removed: 0, mods: new Set<string>() };
+      children.set(childPath, agg);
+    }
+    agg.added += row.added;
+    agg.removed += row.removed;
+    if (touched(row.added, row.removed)) agg.mods.add(row.hash);
+  }
+
+  const h = commits.length;
+  return [...children.entries()]
+    .map(([path, agg]) => {
+      const churn = agg.added + agg.removed;
+      const n = agg.mods.size;
+      return {
+        path,
+        kind: agg.kind,
+        added: agg.added,
+        removed: agg.removed,
+        growth: agg.added - agg.removed,
+        churn,
+        modifications: n,
+        commitSetSize: h,
+        modificationFrequency: h === 0 ? 0 : n / h,
+        churnRate: h === 0 ? 0 : churn / h,
+      };
+    })
+    .sort((a, b) => b.churn - a.churn || a.path.localeCompare(b.path));
+}
+
+export interface FileHistoryEntry {
+  hash: string;
+  authorName: string;
+  date: string; // committer date, ISO 8601
+  subject: string;
+  added: number;
+  removed: number;
+}
+
+/** Per-commit adds/removes for a path (file: exact; directory: sums below it), newest first. */
+export function fileHistory(log: Log, query: MetricsQuery = {}): FileHistoryEntry[] {
+  const sel = query.commitSet ?? { kind: 'all' };
+  const commits = selectCommits(log, sel);
+  const path = normalizePath(query.path);
+
+  const rowsByHash = new Map<string, Row[]>();
+  for (const row of log.rows) {
+    if (!underPath(row.path, path)) continue;
+    const list = rowsByHash.get(row.hash);
+    if (list) list.push(row);
+    else rowsByHash.set(row.hash, [row]);
+  }
+
+  const history: FileHistoryEntry[] = [];
+  for (const commit of commits) {
+    const rows = rowsByHash.get(commit.hash);
+    if (!rows) continue;
+    let added = 0;
+    let removed = 0;
+    for (const row of rows) {
+      added += row.added;
+      removed += row.removed;
+    }
+    history.push({
+      hash: commit.hash,
+      authorName: commit.authorName,
+      date: commit.date,
+      subject: commit.subject,
+      added,
+      removed,
+    });
+  }
+  return history;
 }
 
 export function authorMetrics(log: Log, query: MetricsQuery = {}): AuthorMetrics[] {

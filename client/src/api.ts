@@ -35,6 +35,26 @@ export interface RepoView {
   authors: AuthorMetrics[];
 }
 
+export interface TreeEntry extends PathMetrics {
+  kind: 'dir' | 'file';
+}
+
+export interface TreeResponse {
+  meta: { id: string; name: string; source: 'url' | 'zip'; origin?: string; ingestedAt: string };
+  path: string;
+  repository: PathMetrics;
+  children: TreeEntry[];
+}
+
+export interface FileHistoryEntry {
+  hash: string;
+  authorName: string;
+  date: string;
+  subject: string;
+  added: number;
+  removed: number;
+}
+
 export interface CommitInfo {
   hash: string;
   authorName: string;
@@ -79,4 +99,19 @@ export const api = {
   },
 
   listCommits: (id: string) => request<CommitInfo[]>(`/api/repos/${encodeURIComponent(id)}/commits`),
+
+  repoTree: (id: string, params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request<TreeResponse>(`/api/repos/${encodeURIComponent(id)}/tree${qs ? `?${qs}` : ''}`);
+  },
+
+  repoAuthors: (id: string, params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request<AuthorMetrics[]>(`/api/repos/${encodeURIComponent(id)}/authors${qs ? `?${qs}` : ''}`);
+  },
+
+  fileHistory: (id: string, params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request<FileHistoryEntry[]>(`/api/repos/${encodeURIComponent(id)}/history${qs ? `?${qs}` : ''}`);
+  },
 };

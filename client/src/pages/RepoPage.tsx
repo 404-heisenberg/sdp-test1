@@ -1,35 +1,96 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useSearchParams, useParams } from 'react-router-dom';
 import { api } from '../api.js';
-import type { RepoView } from '../api.js';
+import type { AuthorMetrics, TreeEntry, TreeResponse } from '../api.js';
+import Breadcrumb, { browseUrl, fileUrl } from '../components/Breadcrumb.js';
+import Metric from '../components/Metric.js';
+import MetricsTable from '../components/MetricsTable.js';
+import type { Column } from '../components/MetricsTable.js';
+import { fmt, fmtPercent, fmtSigned } from '../format.js';
 
-function fmt(n: number, digits = 2): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(digits);
+function basename(p: string): string {
+  return p.slice(p.lastIndexOf('/') + 1);
 }
 
-function Metric({ label, value, tone }: { label: string; value: string; tone?: 'pos' | 'neg' }) {
-  return (
-    <div className="metric">
-      <div className="label">{label}</div>
-      <div className={`value${tone === 'pos' ? ' positive' : tone === 'neg' ? ' negative' : ''}`}>
-        {value}
-      </div>
-    </div>
-  );
-}
+const childColumns = (id: string): Column<TreeEntry>[] => [
+  {
+    key: 'path',
+    label: 'Name',
+    sortValue: (c) => basename(c.path),
+    render: (c) => (
+      <span className="tree-name">
+        <span className={`kind-badge kind-${c.kind}`}>{c.kind === 'dir' ? 'DIR' : 'FILE'}</span>
+        {c.kind === 'dir' ? (
+          <Link to={browseUrl(id, c.path)}>{basename(c.path)}</Link>
+        ) : (
+          <Link to={fileUrl(id, c.path)}>{basename(c.path)}</Link>
+        )}
+      </span>
+    ),
+  },
+  { key: 'added', label: 'Added', numeric: true },
+  { key: 'removed', label: 'Removed', numeric: true },
+  {
+    key: 'growth',
+    label: 'Growth',
+    numeric: true,
+    render: (c) => fmtSigned(c.growth),
+    cellClass: (c) => (c.growth > 0 ? 'positive' : c.growth < 0 ? 'negative' : ''),
+  },
+  { key: 'churn', label: 'Churn', numeric: true },
+  { key: 'modifications', label: 'Mods', numeric: true },
+  {
+    key: 'modificationFrequency',
+    label: 'Mod. freq. (η)',
+    numeric: true,
+    render: (c) => fmt(c.modificationFrequency),
+  },
+  { key: 'churnRate', label: 'Churn rate (ρ)', numeric: true, render: (c) => fmt(c.churnRate) },
+];
+
+const authorColumns: Column<AuthorMetrics>[] = [
+  {
+    key: 'name',
+    label: 'Author',
+    sortValue: (a) => a.name,
+    render: (a) => (
+      <>
+        {a.name} <span className="subtitle">({a.email})</span>
+      </>
+    ),
+  },
+  { key: 'modifications', label: 'Modifications', numeric: true },
+  { key: 'churn', label: 'Churn (λa)', numeric: true },
+  { key: 'ownership', label: 'Ownership (ω)', numeric: true, render: (a) => fmtPercent(a.ownership) },
+];
 
 export default function RepoPage() {
   const { id } = useParams<{ id: string }>();
-  const [view, setView] = useState<RepoView | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const path = searchParams.get('path') ?? '';
+  const [tree, setTree] = useState<TreeResponse | null>(null);
+  const [authors, setAuthors] = useState<AuthorMetrics[] | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!id) return;
-    api
-      .repoView(id, { top: '25' })
-      .then(setView)
-      .catch((err) => setError((err as Error).message));
-  }, [id]);
+    let alive = true;
+    const params: Record<string, string> = path === '' ? {} : { path };
+    Promise.all([api.repoTree(id, params), api.repoAuthors(id, params)])
+      .then(([t, a]) => {
+        if (alive) {
+          setTree(t);
+          setAuthors(a);
+          setError('');
+        }
+      })
+      .catch((err) => {
+        if (alive) setError((err as Error).message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id, path]);
 
   if (error) {
     return (
@@ -42,7 +103,7 @@ export default function RepoPage() {
     );
   }
 
-  if (!view) {
+  if (!tree || !authors) {
     return (
       <div className="container">
         <Link className="back-link" to="/">
@@ -53,28 +114,26 @@ export default function RepoPage() {
     );
   }
 
-  const r = view.repository;
+  const r = tree.repository;
   return (
     <div className="container">
       <Link className="back-link" to="/">
         ← All repositories
       </Link>
-      <header className="app-header">
-        <h1>{view.meta.name}</h1>
-      </header>
+      <Breadcrumb id={tree.meta.id} name={tree.meta.name} path={tree.path} />
       <p className="repo-meta">
-        {view.meta.source === 'url' ? `Cloned from ${view.meta.origin ?? 'unknown'}` : 'Uploaded zip'} ·
-        ingested {new Date(view.meta.ingestedAt).toLocaleString()} · {r.commitSetSize} non-merge commits
+        {tree.meta.source === 'url' ? `Cloned from ${tree.meta.origin ?? 'unknown'}` : 'Uploaded zip'} · ingested{' '}
+        {new Date(tree.meta.ingestedAt).toLocaleString()} · {r.commitSetSize} non-merge commits
       </p>
 
       <div className="card">
-        <h2>Repository metrics</h2>
+        <h2>{tree.path === '' ? 'Repository metrics' : 'Directory metrics'}</h2>
         <div className="metric-grid">
           <Metric label="Added (l+)" value={fmt(r.added)} />
           <Metric label="Removed (l−)" value={fmt(r.removed)} />
           <Metric
             label="Growth (δ)"
-            value={`${r.growth > 0 ? '+' : ''}${fmt(r.growth)}`}
+            value={fmtSigned(r.growth)}
             tone={r.growth > 0 ? 'pos' : r.growth < 0 ? 'neg' : undefined}
           />
           <Metric label="Churn (λ)" value={fmt(r.churn)} />
@@ -86,72 +145,31 @@ export default function RepoPage() {
       </div>
 
       <div className="card">
-        <h2>Top files by churn</h2>
-        {view.files.length === 0 ? (
-          <div className="empty">No file changes recorded.</div>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>File</th>
-                <th>Added</th>
-                <th>Removed</th>
-                <th>Growth</th>
-                <th>Churn</th>
-                <th>Mods</th>
-                <th>η</th>
-                <th>ρ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {view.files.map((f) => (
-                <tr key={f.path}>
-                  <td>{f.path}</td>
-                  <td>{f.added}</td>
-                  <td>{f.removed}</td>
-                  <td className={f.growth > 0 ? 'positive' : f.growth < 0 ? 'negative' : ''}>
-                    {f.growth > 0 ? '+' : ''}
-                    {f.growth}
-                  </td>
-                  <td>{f.churn}</td>
-                  <td>{f.modifications}</td>
-                  <td>{fmt(f.modificationFrequency)}</td>
-                  <td>{fmt(f.churnRate)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <h2>{tree.path === '' ? 'Contents' : 'Contents of ' + tree.path}</h2>
+        {id && (
+          <MetricsTable
+            columns={childColumns(id)}
+            rows={tree.children}
+            rowKey={(c) => c.path}
+            initialSort={{ key: 'churn', dir: 'desc' }}
+            searchValue={(c) => basename(c.path)}
+            searchPlaceholder="Search files and directories…"
+            emptyMessage="No changes recorded under this path."
+          />
         )}
       </div>
 
       <div className="card">
-        <h2>Authors</h2>
-        {view.authors.length === 0 ? (
-          <div className="empty">No authors recorded.</div>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Author</th>
-                <th>Modifications</th>
-                <th>Churn (λa)</th>
-                <th>Ownership (ω)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {view.authors.map((a) => (
-                <tr key={a.email}>
-                  <td>
-                    {a.name} <span className="subtitle">({a.email})</span>
-                  </td>
-                  <td>{a.modifications}</td>
-                  <td>{a.churn}</td>
-                  <td>{(a.ownership * 100).toFixed(1)}%</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        <h2>Authors{tree.path === '' ? '' : ` — ${tree.path}`}</h2>
+        <MetricsTable
+          columns={authorColumns}
+          rows={authors}
+          rowKey={(a) => a.email}
+          initialSort={{ key: 'churn', dir: 'desc' }}
+          searchValue={(a) => `${a.name} ${a.email}`}
+          searchPlaceholder="Search authors…"
+          emptyMessage="No authors recorded."
+        />
       </div>
     </div>
   );
